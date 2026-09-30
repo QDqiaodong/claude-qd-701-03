@@ -273,6 +273,18 @@ INSERT INTO defect (id, defect_no, aircraft_id, ata_chapter, description, limit_
     (14, 'DF-2026-0014', 14, '36-12', '1 号客舱空调组件温度调节偏慢（按 MEL 21-2 保留）', 'DAY', 10,
      DATE_SUB(CURDATE(), INTERVAL 2 DAY), DATE_ADD(CURDATE(), INTERVAL 8 DAY), 'OPEN', '机械员陈志强', DATE_SUB(NOW(), INTERVAL 2 DAY));
 
+-- 跨日口径验收专用（与业务日 CURDATE() 对齐，任意一天初始化都成立）：
+--   DF-2026-0015：到期日 == 今天，状态 OPEN，页面必须显示「今天到期」仍有效（剩余 0 天、不标红、不计超期），
+--                  从下一业务日零点起才算超期；
+--   DF-2026-0016：到期日早于今天，但库里【仍是 OPEN】（存量脏数据：状态没来得及随跨日置位）。
+--                  升级后第一次读取（任意入口：顶部总览/超期查询/故障列表）就必须按超期展示，
+--                  不要求先打开故障页；随后由批量校正幂等落库为 OVERDUE，重复刷新不再变化。
+INSERT INTO defect (id, defect_no, aircraft_id, ata_chapter, description, limit_unit, limit_value, found_date, due_date, status, reporter, updated_at) VALUES
+    (15, 'DF-2026-0015', 6, '52-11', '客舱门观察窗加温丝偶发断路（今天到期，当日仍有效）', 'DAY', 5,
+     DATE_SUB(CURDATE(), INTERVAL 5 DAY), CURDATE(), 'OPEN', '机务钱明亮', DATE_SUB(NOW(), INTERVAL 5 DAY)),
+    (16, 'DF-2026-0016', 6, '26-21', '烟感探测器误报（到期日已过仍挂开放，验证存量自动按超期）', 'DAY', 3,
+     DATE_SUB(CURDATE(), INTERVAL 6 DAY), DATE_SUB(CURDATE(), INTERVAL 3 DAY), 'OPEN', '机务钱明亮', DATE_SUB(NOW(), INTERVAL 6 DAY));
+
 -- ----------------------------------------------------------------------------
 -- 模块五：航材
 -- ----------------------------------------------------------------------------

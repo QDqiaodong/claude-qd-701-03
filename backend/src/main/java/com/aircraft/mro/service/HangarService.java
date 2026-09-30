@@ -17,6 +17,8 @@ import com.aircraft.mro.repository.WorkCardRepository;
 /**
  * 机库总览：顶栏那排计数器 + 主页面用到的汇总数字。
  * 全部走 repository 的 count 派生查询，低库存这种"两列比较"的用内存过滤。
+ * 故障开放/超期计数按业务日期口径即时派生（与故障列表、超期查询完全一致），
+ * 不依赖库里状态是否已被批量校正置位，所以不先打开故障页数字也是对的。
  */
 @Service
 public class HangarService {
@@ -27,19 +29,25 @@ public class HangarService {
     private final DefectRepository defectRepository;
     private final PartRepository partRepository;
     private final ToolLoanRepository toolLoanRepository;
+    private final BusinessClock clock;
+    private final DefectOverdueService overdueService;
 
     public HangarService(BayRepository bayRepository,
                          AircraftRepository aircraftRepository,
                          WorkCardRepository workCardRepository,
                          DefectRepository defectRepository,
                          PartRepository partRepository,
-                         ToolLoanRepository toolLoanRepository) {
+                         ToolLoanRepository toolLoanRepository,
+                         BusinessClock clock,
+                         DefectOverdueService overdueService) {
         this.bayRepository = bayRepository;
         this.aircraftRepository = aircraftRepository;
         this.workCardRepository = workCardRepository;
         this.defectRepository = defectRepository;
         this.partRepository = partRepository;
         this.toolLoanRepository = toolLoanRepository;
+        this.clock = clock;
+        this.overdueService = overdueService;
     }
 
     @Transactional(readOnly = true)
@@ -60,8 +68,11 @@ public class HangarService {
         long cardWaitInsp = workCardRepository.countByStatus("WAIT_INSP");
         long cardClosed = workCardRepository.countByStatus("CLOSED");
 
-        long defectOpen = defectRepository.countByStatus("OPEN");
-        long defectOverdue = defectRepository.countByStatus("OVERDUE");
+        // 只读计数，但顺带预约跨日批量校正（异步、不阻塞总览）；计数本身按日期口径即时算
+        overdueService.requestRefresh();
+        java.time.LocalDate today = clock.today();
+        long defectOpen = defectRepository.countOpen(today);
+        long defectOverdue = defectRepository.countOverdue(today);
 
         List<Part> parts = partRepository.findAllByOrderByPartNoAsc();
         long partLow = parts.stream().filter(part -> part.getStockQty() < part.getMinQty()).count();

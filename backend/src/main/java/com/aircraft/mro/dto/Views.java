@@ -83,7 +83,7 @@ public final class Views {
             boolean done) {
     }
 
-    /** 故障保留 */
+    /** 故障保留。overdue=已经超期（到期日早于业务日且未关闭）；todayDue=今天到期（当日仍有效，次日才超期） */
     public record DefectView(
             Long id,
             String defectNo,
@@ -101,7 +101,8 @@ public final class Views {
             String statusName,
             String reporter,
             Long daysLeft,
-            boolean overdue) {
+            boolean overdue,
+            boolean todayDue) {
     }
 
     /** 航材件 */

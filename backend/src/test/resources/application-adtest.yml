@@ -26,3 +26,6 @@ spring:
 mro:
   ad:
     upload-dir: build/ad-evidence-test
+  defect:
+    # 小批大小：让「较多记录」用例真实跨多个批次，验证 keyset 分批与单批失败续跑
+    overdue-batch-size: 50

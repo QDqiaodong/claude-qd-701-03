@@ -332,6 +332,12 @@ body {
   color: var(--mro-danger);
 }
 
+/* 今天到期（当日仍有效）：琥珀色提示，与超期红明确区分 */
+.el-table .row-today-due {
+  --el-table-tr-bg-color: #fff4e5;
+  color: #ef6c00;
+}
+
 .el-table .row-low {
   --el-table-tr-bg-color: #fff8e1;
 }
