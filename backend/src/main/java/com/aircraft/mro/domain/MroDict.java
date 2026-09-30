@@ -97,6 +97,36 @@ public final class MroDict {
     /** 保留期限上限（飞行日） */
     public static final int MAX_LIMIT_DAY = 120;
 
+    // ---------------- 故障保留：跨日超期口径（唯一判据，所有入口共用） ----------------
+    /**
+     * 超期边界：到期日 < 业务日期（到期日当天仍在有效期内，从下一业务日起才算超期）。
+     * 已关闭缺陷无论日期多早都不再算超期。
+     */
+    public static boolean defectOverdue(String status, java.time.LocalDate dueDate, java.time.LocalDate today) {
+        return !DEFECT_CLOSED.equals(status) && dueDate != null && dueDate.isBefore(today);
+    }
+
+    /** 今天到期：未关闭且到期日正好等于业务日期（与"已超期"严格区分） */
+    public static boolean defectDueToday(String status, java.time.LocalDate dueDate, java.time.LocalDate today) {
+        return !DEFECT_CLOSED.equals(status) && dueDate != null && dueDate.isEqual(today);
+    }
+
+    /**
+     * 生效状态：超期是"开放中且到期日已过"的派生状态，展示/筛选/计数统一走这里，
+     * 不依赖库里的 status 列是否已被后台校正（库里的 OPEN/OVERDUE 都要解释得通）。
+     */
+    public static String defectEffectiveStatus(String status, java.time.LocalDate dueDate,
+                                               java.time.LocalDate today) {
+        if (DEFECT_CLOSED.equals(status)) {
+            return DEFECT_CLOSED;
+        }
+        return defectOverdue(status, dueDate, today) ? DEFECT_OVERDUE : DEFECT_OPEN;
+    }
+
+    public static final String DEFECT_OPEN = "OPEN";
+    public static final String DEFECT_CLOSED = "CLOSED";
+    public static final String DEFECT_OVERDUE = "OVERDUE";
+
     // ---------------- 航材 ----------------
     private static final Map<String, String> LOAN_STATUS = Map.of(
             "OUT", "在借未还",

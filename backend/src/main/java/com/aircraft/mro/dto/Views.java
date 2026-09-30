@@ -83,7 +83,7 @@ public final class Views {
             boolean done) {
     }
 
-    /** 故障保留 */
+    /** 故障保留。status/statusName 为按业务日期派生的生效状态（OPEN/OVERDUE/CLOSED） */
     public record DefectView(
             Long id,
             String defectNo,
@@ -101,7 +101,8 @@ public final class Views {
             String statusName,
             String reporter,
             Long daysLeft,
-            boolean overdue) {
+            boolean overdue,
+            boolean dueToday) {
     }
 
     /** 航材件 */

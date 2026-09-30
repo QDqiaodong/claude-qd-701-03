@@ -332,6 +332,11 @@ body {
   color: var(--mro-danger);
 }
 
+/* 今天到期：橙色提示，但仍在有效期内，不与已超期同色 */
+.el-table .row-due-today {
+  --el-table-tr-bg-color: #fff4e5;
+}
+
 .el-table .row-low {
   --el-table-tr-bg-color: #fff8e1;
 }

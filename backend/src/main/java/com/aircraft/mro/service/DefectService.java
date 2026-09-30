@@ -1,7 +1,6 @@
 package com.aircraft.mro.service;
 
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -12,6 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.aircraft.mro.common.BizException;
+import com.aircraft.mro.common.BusinessClock;
 import com.aircraft.mro.domain.Aircraft;
 import com.aircraft.mro.domain.Defect;
 import com.aircraft.mro.domain.MroDict;
@@ -27,7 +27,11 @@ import com.aircraft.mro.repository.DefectRepository;
  * <ol>
  *   <li>缺陷单号唯一</li>
  *   <li>保留期限：DAY 按飞行日直接加天；HOUR 按每天飞 {@value MroDict#HOUR_PER_DAY} 小时折算成飞行日</li>
- *   <li>到期日已过且仍开放的，列表时自动置为超期（OVERDUE）</li>
+ *   <li>跨日超期口径全站唯一（{@link MroDict#defectEffectiveStatus}）：到期日 &lt; 业务日期
+ *       且未关闭即为超期；到期日当天仍有效，下一业务日起才算超期；已关闭永不回退。
+ *       列表/只看本机/超期清单/顶部总览/放行门禁都用同一判据，读的时候只按日期派生，
+ *       <b>不逐条写库</b>；库里 OPEN→OVERDUE 的批量收敛由 {@link DefectOverdueReconciler}
+ *       在后台异步完成，因此先开哪个页面都不影响结果。</li>
  *   <li>已关闭的缺陷不能重复关闭</li>
  * </ol>
  */
@@ -37,31 +41,30 @@ public class DefectService {
     private final DefectRepository defectRepository;
     private final AircraftRepository aircraftRepository;
     private final ReleaseService releaseService;
+    private final BusinessClock clock;
+    private final DefectOverdueReconciler reconciler;
 
     public DefectService(DefectRepository defectRepository, AircraftRepository aircraftRepository,
-                         ReleaseService releaseService) {
+                         ReleaseService releaseService, BusinessClock clock,
+                         DefectOverdueReconciler reconciler) {
         this.defectRepository = defectRepository;
         this.aircraftRepository = aircraftRepository;
         this.releaseService = releaseService;
+        this.clock = clock;
+        this.reconciler = reconciler;
     }
 
-    @Transactional
+    /**
+     * 故障列表（可按机号过滤）。纯读：超期按业务日期实时派生，刷新列表不产生任何写入；
+     * 同时异步提示校正器"今天还没校正过的话补一次后台收敛"，不阻塞本次返回。
+     */
+    @Transactional(readOnly = true)
     public List<Views.DefectView> list(Long aircraftId) {
+        reconciler.requestCheck("defect-list");
         List<Defect> defects = aircraftId == null
                 ? defectRepository.findAllByOrderByDefectNoAsc()
                 : defectRepository.findAllByAircraftIdOrderByDefectNoAsc(aircraftId);
-        LocalDate today = LocalDate.now();
-        // 超期自动置位：开放中且到期日已过的，落库成 OVERDUE，页面整行标红
-        for (Defect defect : defects) {
-            if ("OPEN".equals(defect.getStatus()) && defect.getDueDate().isBefore(today)) {
-                defect.setStatus("OVERDUE");
-                defect.setUpdatedAt(LocalDateTime.now());
-                defectRepository.save(defect);
-                // 故障状态变化（开放→超期）：该机待审放行立即失效，不能拿旧快照放行
-                releaseService.invalidateOnFactChange(defect.getAircraftId(),
-                        "故障 " + defect.getDefectNo() + " 已超过保留到期日，变为超期故障");
-            }
-        }
+        LocalDate today = clock.today();
         Map<Long, String> tailMap = new HashMap<>();
         for (Aircraft aircraft : aircraftRepository.findAllByOrderByTailNoAsc()) {
             tailMap.put(aircraft.getId(), aircraft.getTailNo());
@@ -73,15 +76,20 @@ public class DefectService {
         return list;
     }
 
+    /**
+     * 超期查询：按日期口径取"未关闭且到期日早于业务日期"，不依赖库里状态是否已被后台置位。
+     * 因此不先进故障页、服务刚重启、跨午夜后第一次查，结果都与列表/总览完全一致。
+     */
     @Transactional(readOnly = true)
     public List<Views.DefectView> overdue() {
+        reconciler.requestCheck("defect-overdue");
         Map<Long, String> tailMap = new HashMap<>();
         for (Aircraft aircraft : aircraftRepository.findAllByOrderByTailNoAsc()) {
             tailMap.put(aircraft.getId(), aircraft.getTailNo());
         }
-        LocalDate today = LocalDate.now();
+        LocalDate today = clock.today();
         List<Views.DefectView> list = new ArrayList<>();
-        for (Defect defect : defectRepository.findAllByStatusOrderByDueDateAsc("OVERDUE")) {
+        for (Defect defect : defectRepository.findEffectiveOverdue(today)) {
             list.add(toView(defect, tailMap, today));
         }
         return list;
@@ -111,7 +119,8 @@ public class DefectService {
         if (days > MroDict.MAX_LIMIT_DAY) {
             throw new BizException("保留期限折算后为 " + days + " 天，超过上限 " + MroDict.MAX_LIMIT_DAY + " 天，需走工程评估");
         }
-        LocalDate foundDate = req.getFoundDate() == null ? LocalDate.now() : req.getFoundDate();
+        LocalDate today = clock.today();
+        LocalDate foundDate = req.getFoundDate() == null ? today : req.getFoundDate();
         LocalDate dueDate = foundDate.plusDays(days);
         Defect defect = new Defect();
         defect.setDefectNo(defectNo);
@@ -122,42 +131,45 @@ public class DefectService {
         defect.setLimitValue(limitValue);
         defect.setFoundDate(foundDate);
         defect.setDueDate(dueDate);
-        defect.setStatus(dueDate.isBefore(LocalDate.now()) ? "OVERDUE" : "OPEN");
+        // 登记时即按统一跨日口径落初始状态（到期日等于当天仍为开放）
+        defect.setStatus(MroDict.defectEffectiveStatus(MroDict.DEFECT_OPEN, dueDate, today));
         defect.setReporter(req.getReporter() == null || req.getReporter().isBlank() ? null : req.getReporter().trim());
-        defect.setUpdatedAt(LocalDateTime.now());
+        defect.setUpdatedAt(clock.now());
         defect = defectRepository.save(defect);
         // 新增关联故障：待审放行的证据快照对不上当前事实，立即失效
         releaseService.invalidateOnFactChange(defect.getAircraftId(),
                 "新增故障保留 " + defect.getDefectNo() + "（" + MroDict.defectStatusName(defect.getStatus()) + "）");
-        return toView(defect, tailNoMap(aircraft), LocalDate.now());
+        return toView(defect, tailNoMap(aircraft), today);
     }
 
-    /** 关闭缺陷：已关闭的不能再关 */
+    /** 关闭缺陷：已关闭的不能再关；关闭后无论到期日多早都不会再算超期 */
     @Transactional
     public Views.DefectView close(Long id) {
         Defect defect = defectRepository.findById(id)
                 .orElseThrow(() -> new BizException("缺陷单不存在：id=" + id));
-        if ("CLOSED".equals(defect.getStatus())) {
+        if (MroDict.DEFECT_CLOSED.equals(defect.getStatus())) {
             throw new BizException("缺陷单 " + defect.getDefectNo() + " 已关闭，不能重复关闭");
         }
-        defect.setStatus("CLOSED");
-        defect.setUpdatedAt(LocalDateTime.now());
+        defect.setStatus(MroDict.DEFECT_CLOSED);
+        defect.setUpdatedAt(clock.now());
         defect = defectRepository.save(defect);
         // 保留故障被闭环，也是维修事实变化：待审放行立即失效（差异视图可查）
         releaseService.invalidateOnFactChange(defect.getAircraftId(),
                 "故障 " + defect.getDefectNo() + " 已关闭，维修事实变化");
-        return toView(defect, tailNoMap(null), LocalDate.now());
+        return toView(defect, tailNoMap(null), clock.today());
     }
 
     private Views.DefectView toView(Defect defect, Map<Long, String> tailMap, LocalDate today) {
-        boolean overdue = !"CLOSED".equals(defect.getStatus()) && defect.getDueDate().isBefore(today);
+        boolean overdue = MroDict.defectOverdue(defect.getStatus(), defect.getDueDate(), today);
+        boolean dueToday = MroDict.defectDueToday(defect.getStatus(), defect.getDueDate(), today);
+        String effectiveStatus = MroDict.defectEffectiveStatus(defect.getStatus(), defect.getDueDate(), today);
         long daysLeft = ChronoUnit.DAYS.between(today, defect.getDueDate());
         return new Views.DefectView(defect.getId(), defect.getDefectNo(), defect.getAircraftId(),
                 tailMap.get(defect.getAircraftId()), defect.getAtaChapter(), defect.getDescription(),
                 defect.getLimitUnit(), MroDict.limitUnitName(defect.getLimitUnit()), defect.getLimitValue(),
                 defect.getLimitValue() + MroDict.limitUnitName(defect.getLimitUnit()),
-                defect.getFoundDate(), defect.getDueDate(), defect.getStatus(),
-                MroDict.defectStatusName(defect.getStatus()), defect.getReporter(), daysLeft, overdue);
+                defect.getFoundDate(), defect.getDueDate(), effectiveStatus,
+                MroDict.defectStatusName(effectiveStatus), defect.getReporter(), daysLeft, overdue, dueToday);
     }
 
     private Map<Long, String> tailNoMap(Aircraft only) {

@@ -129,7 +129,7 @@ public class ReleaseService {
         if (aircraft == null) {
             throw new BizException("飞机不存在：id=" + aircraftId);
         }
-        ReleaseFactsCollector.ReleaseFacts facts = factsCollector.collect(aircraftId, true);
+        ReleaseFactsCollector.ReleaseFacts facts = factsCollector.collect(aircraftId);
         Bay bay = facts.bay;
         boolean airworthyOk = "AIRWORTHY".equals(aircraft.getAirworthy());
         boolean occupied = bay != null && "OCCUPIED".equals(bay.getStatus())
@@ -211,7 +211,7 @@ public class ReleaseService {
         int latestVersion = snapshots.isEmpty() ? 0 : snapshots.get(snapshots.size() - 1).getVersionNo();
 
         // 当前事实（用于差异比对 + 门禁面板）
-        ReleaseFactsCollector.ReleaseFacts facts = factsCollector.collect(order.getAircraftId(), true);
+        ReleaseFactsCollector.ReleaseFacts facts = factsCollector.collect(order.getAircraftId());
         Map<Long, WorkCard> cardMap = new HashMap<>();
         for (WorkCard c : facts.cards) {
             cardMap.put(c.getId(), c);
@@ -352,7 +352,7 @@ public class ReleaseService {
 
         // 再次提交必须形成【新】证据快照（驳回后重新提交 / 草稿首次提交都重新取当前事实）
         LocalDateTime now = LocalDateTime.now();
-        ReleaseFactsCollector.ReleaseFacts facts = factsCollector.collect(order.getAircraftId(), true);
+        ReleaseFactsCollector.ReleaseFacts facts = factsCollector.collect(order.getAircraftId());
         List<String> blockers = gateBlockers(facts);
         if (!blockers.isEmpty()) {
             throw new BizException("提交被门禁拦截：" + String.join("；", blockers)
@@ -752,7 +752,7 @@ public class ReleaseService {
      */
     private ReleaseSnapshot buildSnapshot(ReleaseOrder order, int version, String kind,
                                           Map<Long, String> inheritBasis, LocalDateTime now) {
-        ReleaseFactsCollector.ReleaseFacts facts = factsCollector.collect(order.getAircraftId(), true);
+        ReleaseFactsCollector.ReleaseFacts facts = factsCollector.collect(order.getAircraftId());
         Aircraft aircraft = facts.aircraft;
         Bay bay = facts.bay;
 
@@ -830,7 +830,7 @@ public class ReleaseService {
      */
     private String detectDrift(ReleaseOrder order) {
         ReleaseSnapshot snap = latestSnapshot(order.getId());
-        ReleaseFactsCollector.ReleaseFacts facts = factsCollector.collect(order.getAircraftId(), true);
+        ReleaseFactsCollector.ReleaseFacts facts = factsCollector.collect(order.getAircraftId());
 
         // 适航状态
         if (!snap.getAirworthy().equals(facts.aircraft.getAirworthy())) {
@@ -891,8 +891,8 @@ public class ReleaseService {
             if (current == null || "CLOSED".equals(current.getStatus())) {
                 return "保留故障 " + sd.getDefectNo() + " 已在快照之后闭环，维修事实发生变化";
             }
-            boolean nowOverdue = "OVERDUE".equals(current.getStatus())
-                    || current.getDueDate().isBefore(facts.today);
+            boolean nowOverdue = MroDict.defectOverdue(current.getStatus(),
+                    current.getDueDate(), facts.today);
             boolean wasOverdue = sd.getOverdueFlag() == 1;
             if (nowOverdue != wasOverdue) {
                 return "故障 " + sd.getDefectNo() + (nowOverdue ? " 已超过保留到期日，变为超期故障"
@@ -907,7 +907,7 @@ public class ReleaseService {
                 continue;
             }
             if (!snapDefectIds.contains(d.getId())) {
-                boolean overdue = "OVERDUE".equals(d.getStatus()) || d.getDueDate().isBefore(facts.today);
+                boolean overdue = MroDict.defectOverdue(d.getStatus(), d.getDueDate(), facts.today);
                 return "快照之后新增了" + (overdue ? "超期" : "开放") + "故障 " + d.getDefectNo();
             }
         }
@@ -990,7 +990,7 @@ public class ReleaseService {
                 changeKind = "CLOSED";
                 currentStatus = current == null ? null : "CLOSED";
             } else {
-                boolean nowOverdue = "OVERDUE".equals(currentStatus) || current.getDueDate().isBefore(today);
+                boolean nowOverdue = MroDict.defectOverdue(currentStatus, current.getDueDate(), today);
                 if (nowOverdue != (sd.getOverdueFlag() == 1)) {
                     changed = true;
                     changeKind = nowOverdue ? "BECAME_OVERDUE" : "OVERDUE_CLEARED";
@@ -1015,12 +1015,13 @@ public class ReleaseService {
             if ("CLOSED".equals(d.getStatus()) || snapDefIds.contains(d.getId())) {
                 continue;
             }
-            boolean overdue = "OVERDUE".equals(d.getStatus()) || d.getDueDate().isBefore(today);
+            boolean overdue = MroDict.defectOverdue(d.getStatus(), d.getDueDate(), today);
+            String effectiveStatus = MroDict.defectEffectiveStatus(d.getStatus(), d.getDueDate(), today);
             defectItems.add(new Views.SnapshotDefectItem(
-                    null, d.getId(), d.getDefectNo(), d.getStatus(),
-                    MroDict.defectStatusName(d.getStatus()), d.getAtaChapter(), d.getDescription(),
+                    null, d.getId(), d.getDefectNo(), effectiveStatus,
+                    MroDict.defectStatusName(effectiveStatus), d.getAtaChapter(), d.getDescription(),
                     d.getDueDate(), overdue, null, !overdue, false, d.getUpdatedAt(),
-                    d.getStatus(), MroDict.defectStatusName(d.getStatus()), true, "NEW"));
+                    effectiveStatus, MroDict.defectStatusName(effectiveStatus), true, "NEW"));
         }
         defectItems.sort(Comparator.comparing(Views.SnapshotDefectItem::defectNo));
 

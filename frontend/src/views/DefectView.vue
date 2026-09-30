@@ -3,7 +3,7 @@
     <section class="panel">
       <div class="panel-head">
         <h3>故障保留</h3>
-        <span class="panel-sub">到期日已过仍开放的整行标红；保留期限 DAY 按飞行日、HOUR 按日飞 6 小时折算</span>
+        <span class="panel-sub">到期日当天仍有效、下一业务日起算超期；已超期整行标红、今天到期整行橙色提示，口径与顶部总览一致</span>
         <div class="panel-extra">
           <el-checkbox v-model="onlyCurrent" label="只看当前机号" />
           <el-button size="small" @click="load">刷新</el-button>
@@ -13,8 +13,16 @@
 
       <el-alert
         v-if="overdueCount > 0"
-        :title="`当前有 ${overdueCount} 条保留已超期，需立即排故闭环`"
+        :title="`当前有 ${overdueCount} 条保留已经超期，需立即排故闭环；另有 ${dueTodayCount} 条今天到期`"
         type="error"
+        show-icon
+        :closable="false"
+        style="margin-bottom: 12px"
+      />
+      <el-alert
+        v-else-if="dueTodayCount > 0"
+        :title="`当前有 ${dueTodayCount} 条保留今天到期（仍在有效期内，次日起算超期）`"
+        type="warning"
         show-icon
         :closable="false"
         style="margin-bottom: 12px"
@@ -29,18 +37,21 @@
           <template #default="{ row }">{{ row.limitValue }} {{ row.limitUnitName }}</template>
         </el-table-column>
         <el-table-column prop="foundDate" label="发现日期" width="110" />
-        <el-table-column prop="dueDate" label="到期日" width="110" />
-        <el-table-column label="剩余" width="90">
+        <el-table-column label="到期日" width="120">
           <template #default="{ row }">
-            <span :style="{ color: row.daysLeft < 0 ? '#c62828' : row.daysLeft <= 3 ? '#ef6c00' : '#2e7d32' }">
-              {{ row.daysLeft < 0 ? `超期 ${-row.daysLeft} 天` : `${row.daysLeft} 天` }}
-            </span>
+            <span>{{ row.dueDate }}</span>
+            <el-tag v-if="row.dueToday" size="small" type="warning" effect="plain" style="margin-left: 4px">今天到期</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="剩余" width="100">
+          <template #default="{ row }">
+            <span :style="{ color: remainColor(row) }">{{ remainText(row) }}</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="100">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.overdue ? 'danger' : row.status === 'CLOSED' ? 'info' : 'warning'">
-              {{ row.overdue ? '超期' : row.statusName }}
+            <el-tag size="small" :type="tagType(row)">
+              {{ statusText(row) }}
             </el-tag>
           </template>
         </el-table-column>
@@ -108,11 +119,43 @@ const form = ref({
 })
 
 const queryId = computed(() => (onlyCurrent.value ? currentId.value : null))
+// 计数与行颜色、顶部总览同一口径：全部以后端按业务日期派生的 status/overdue/dueToday 为准
 const overdueCount = computed(() => list.value.filter((d) => d.overdue).length)
+const dueTodayCount = computed(() => list.value.filter((d) => d.dueToday).length)
 
-/** 超期整行标红 */
+/** 已超期整行标红；今天到期整行橙色；其余默认 */
 function rowClass({ row }) {
-  return row.overdue ? 'row-overdue' : ''
+  if (row.overdue) return 'row-overdue'
+  if (row.dueToday) return 'row-due-today'
+  return ''
+}
+
+function tagType(row) {
+  if (row.overdue) return 'danger'
+  if (row.status === 'CLOSED') return 'info'
+  if (row.dueToday) return 'warning'
+  return 'success'
+}
+
+function statusText(row) {
+  if (row.overdue) return '已经超期'
+  if (row.status === 'CLOSED') return row.statusName
+  if (row.dueToday) return '今天到期'
+  return '开放'
+}
+
+function remainColor(row) {
+  if (row.overdue) return '#c62828'
+  if (row.dueToday) return '#ef6c00'
+  if (row.daysLeft <= 3) return '#ef6c00'
+  return '#2e7d32'
+}
+
+function remainText(row) {
+  if (row.overdue) return `超期 ${-row.daysLeft} 天`
+  if (row.dueToday) return '今天到期'
+  if (row.daysLeft === 0) return '今天到期'
+  return `${row.daysLeft} 天`
 }
 
 async function load() {

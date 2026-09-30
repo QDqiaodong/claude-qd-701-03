@@ -273,6 +273,21 @@ INSERT INTO defect (id, defect_no, aircraft_id, ata_chapter, description, limit_
     (14, 'DF-2026-0014', 14, '36-12', '1 号客舱空调组件温度调节偏慢（按 MEL 21-2 保留）', 'DAY', 10,
      DATE_SUB(CURDATE(), INTERVAL 2 DAY), DATE_ADD(CURDATE(), INTERVAL 8 DAY), 'OPEN', '机械员陈志强', DATE_SUB(NOW(), INTERVAL 2 DAY));
 
+-- 跨日一致性验收数据（升级场景 + 临界口径）：
+--   0015 库里仍是 OPEN 但昨天已到期 → 升级后任一入口第一次读就按超期展示（后台批量校正落库）
+--   0016 今天到期仍开放（有效期内，与"已超期"区分，次日起才算超期）
+--   0017 明天到期，正常开放
+--   0018 已关闭但到期日很早 → 任何口径下都不得重新变成超期
+INSERT INTO defect (id, defect_no, aircraft_id, ata_chapter, description, limit_unit, limit_value, found_date, due_date, status, reporter, updated_at) VALUES
+    (15, 'DF-2026-0015', 1, '22-10', '自动加压控制器昨日到期（升级存量：状态仍 OPEN，任一入口首读即按超期）', 'DAY', 3,
+     DATE_SUB(CURDATE(), INTERVAL 4 DAY), DATE_SUB(CURDATE(), INTERVAL 1 DAY), 'OPEN', '机长李航', DATE_SUB(NOW(), INTERVAL 1 DAY)),
+    (16, 'DF-2026-0016', 2, '25-20', '旅客供氧压力指示今天到期（当天仍有效，提示"今天到期"）', 'DAY', 5,
+     DATE_SUB(CURDATE(), INTERVAL 5 DAY), CURDATE(), 'OPEN', '机务赵岩', DATE_SUB(NOW(), INTERVAL 5 DAY)),
+    (17, 'DF-2026-0017', 3, '52-10', '右后舱门封严明天到期（正常开放）', 'DAY', 7,
+     DATE_SUB(CURDATE(), INTERVAL 6 DAY), DATE_ADD(CURDATE(), INTERVAL 1 DAY), 'OPEN', '机长王子恒', DATE_SUB(NOW(), INTERVAL 6 DAY)),
+    (18, 'DF-2026-0018', 4, '57-30', '机翼防冰活门指示早已到期但已闭环（关闭后永不重新超期）', 'DAY', 3,
+     DATE_SUB(CURDATE(), INTERVAL 40 DAY), DATE_SUB(CURDATE(), INTERVAL 30 DAY), 'CLOSED', '乘务长何蕊', DATE_SUB(NOW(), INTERVAL 30 DAY));
+
 -- ----------------------------------------------------------------------------
 -- 模块五：航材
 -- ----------------------------------------------------------------------------

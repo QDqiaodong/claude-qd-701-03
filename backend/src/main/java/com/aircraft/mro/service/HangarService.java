@@ -5,6 +5,7 @@ import java.util.List;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.aircraft.mro.common.BusinessClock;
 import com.aircraft.mro.domain.Part;
 import com.aircraft.mro.dto.Views;
 import com.aircraft.mro.repository.AircraftRepository;
@@ -17,6 +18,10 @@ import com.aircraft.mro.repository.WorkCardRepository;
 /**
  * 机库总览：顶栏那排计数器 + 主页面用到的汇总数字。
  * 全部走 repository 的 count 派生查询，低库存这种"两列比较"的用内存过滤。
+ *
+ * <p>故障计数与故障列表/超期查询共用同一跨日口径（未关闭且到期日 &lt; 业务日期才算超期；
+ * 到期日当天仍计入开放），按日期实时统计，不依赖库里 status 列是否已被后台校正，
+ * 所以"先开首页"和"先进故障页再回来"看到的数量必然相同。
  */
 @Service
 public class HangarService {
@@ -27,23 +32,32 @@ public class HangarService {
     private final DefectRepository defectRepository;
     private final PartRepository partRepository;
     private final ToolLoanRepository toolLoanRepository;
+    private final BusinessClock clock;
+    private final DefectOverdueReconciler reconciler;
 
     public HangarService(BayRepository bayRepository,
                          AircraftRepository aircraftRepository,
                          WorkCardRepository workCardRepository,
                          DefectRepository defectRepository,
                          PartRepository partRepository,
-                         ToolLoanRepository toolLoanRepository) {
+                         ToolLoanRepository toolLoanRepository,
+                         BusinessClock clock,
+                         DefectOverdueReconciler reconciler) {
         this.bayRepository = bayRepository;
         this.aircraftRepository = aircraftRepository;
         this.workCardRepository = workCardRepository;
         this.defectRepository = defectRepository;
         this.partRepository = partRepository;
         this.toolLoanRepository = toolLoanRepository;
+        this.clock = clock;
+        this.reconciler = reconciler;
     }
 
     @Transactional(readOnly = true)
     public Views.Overview overview() {
+        // 纯读统计前异步提示跨日校正（不阻塞、不抛异常），首页即第一个入口也能保证读值正确
+        reconciler.requestCheck("hangar-overview");
+
         long bayTotal = bayRepository.count();
         long bayIdle = bayRepository.countByStatus("IDLE");
         long bayOccupied = bayRepository.countByStatus("OCCUPIED");
@@ -60,8 +74,9 @@ public class HangarService {
         long cardWaitInsp = workCardRepository.countByStatus("WAIT_INSP");
         long cardClosed = workCardRepository.countByStatus("CLOSED");
 
-        long defectOpen = defectRepository.countByStatus("OPEN");
-        long defectOverdue = defectRepository.countByStatus("OVERDUE");
+        var today = clock.today();
+        long defectOpen = defectRepository.countEffectiveOpen(today);
+        long defectOverdue = defectRepository.countEffectiveOverdue(today);
 
         List<Part> parts = partRepository.findAllByOrderByPartNoAsc();
         long partLow = parts.stream().filter(part -> part.getStockQty() < part.getMinQty()).count();
